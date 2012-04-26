@@ -214,6 +214,7 @@ class DownloadURLOpener(urllib.FancyURLopener):
         this and provide a function to log the error and raise an
         exception, so we don't download the HTTP error page here.
         """
+        logger.debug("http_error_default")
         # The following two lines are copied from urllib.URLopener's
         # implementation of http_error_default
         void = fp.read()
@@ -224,6 +225,7 @@ class DownloadURLOpener(urllib.FancyURLopener):
         """ This is the exact same function that's included with urllib
             except with "void = fp.read()" commented out. """
         
+        logger.debug("redirect_internal")
         if 'location' in headers:
             newurl = headers['location']
         elif 'uri' in headers:
@@ -247,6 +249,10 @@ class DownloadURLOpener(urllib.FancyURLopener):
         # method, at the end after the line "if errcode == 200:"
         return urllib.addinfourl(fp, headers, 'http:' + url)
 
+    def http_error_401(self, url, fp, errcode, errmsg, headers, data=None):
+            logger.debug("url: %s, errcode: %s, errmsg: %s, headers: %s" % (url, errcode, errmsg, headers))
+            urllib.FancyURLopener.http_error_401(self, url, fp, errcode, errmsg, headers, data)
+            
     def retrieve_resume(self, url, filename, reporthook=None, data=None):
         """Download files from an URL; return (headers, real_url)
 
@@ -267,6 +273,12 @@ class DownloadURLOpener(urllib.FancyURLopener):
                 logger.warn('Cannot resume download: %s', filename, exc_info=True)
                 tfp = None
                 current_size = 0
+                
+        if self.channel.auth_username:
+            auth = '%s:%s' % (self.channel.auth_username, self.channel.auth_password)
+            import base64
+            auth = base64.b64encode(auth)
+            self.addheader('Authorization', "Basic %s" % auth)
 
         if tfp is None:
             tfp = open(filename, 'wb')
@@ -329,6 +341,7 @@ class DownloadURLOpener(urllib.FancyURLopener):
 # end code based on urllib.py
 
     def prompt_user_passwd( self, host, realm):
+        logger.debug('Need authentication: host %s, realm %s' % (host, realm))
         # Keep track of authentication attempts, fail after the third one
         self._auth_retry_counter += 1
         if self._auth_retry_counter > 3:
