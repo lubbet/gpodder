@@ -31,7 +31,6 @@ import glob
 import time
 import tempfile
 import collections
-import threading
 import urllib
 import cgi
 
@@ -82,6 +81,8 @@ from gpodder.gtkui.desktop.shownotes import gPodderShownotes
 from gpodder.gtkui.desktop.episodeselector import gPodderEpisodeSelector
 from gpodder.gtkui.desktop.podcastdirectory import gPodderPodcastDirectory
 from gpodder.gtkui.interface.progress import ProgressIndicator
+
+from gpodder.gtkui.desktop.sync import gPodderSyncUI
 
 from gpodder.dbusproxy import DBusPodcastsProxy
 from gpodder import extensions
@@ -212,7 +213,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
         # load list of user applications for audio playback
         self.user_apps_reader = UserAppsReader(['audio', 'video'])
-        threading.Thread(target=self.user_apps_reader.read).start()
+        util.run_in_background(self.user_apps_reader.read)
 
         # Set up the first instance of MygPoClient
         self.mygpo_client = my.MygPoClient(self.config)
@@ -291,7 +292,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
                     util.idle_add(self.wNotebook.set_current_page, 0)
             else:
                 util.idle_add(self.clean_up_downloads, True)
-        threading.Thread(target=find_partial_downloads).start()
+        util.run_in_background(find_partial_downloads)
 
         # Start the auto-update procedure
         self._auto_update_timer_source_id = None
@@ -985,7 +986,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
                 else:
                     text = _('No subscriptions')
             elif role == TreeViewHelper.ROLE_DOWNLOADS:
-                text = _('No active downloads')
+                text = _('No active tasks')
             else:
                 raise Exception('on_treeview_expose_event: unknown role')
 
@@ -1056,7 +1057,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
         try:
             model = self.download_status_model
 
-            downloading, failed, finished, queued, paused, others = 0, 0, 0, 0, 0, 0
+            downloading, synchronizing, failed, finished, queued, paused, others = 0, 0, 0, 0, 0, 0, 0
             total_speed, total_size, done_size = 0, 0, 0
 
             # Keep a list of all download tasks that we've seen
@@ -1079,7 +1080,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
                 self.download_status_model.request_update(row.iter)
 
                 task = row[self.download_status_model.C_TASK]
-                speed, size, status, progress = task.speed, task.total_size, task.status, task.progress
+                speed, size, status, progress, activity = task.speed, task.total_size, task.status, task.progress, task.activity
 
                 # Let the download task monitors know of changes
                 for monitor in self.download_task_monitors:
@@ -1094,9 +1095,13 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
                 download_tasks_seen.add(task)
 
-                if status == download.DownloadTask.DOWNLOADING:
+                if (status == download.DownloadTask.DOWNLOADING and
+                        activity == download.DownloadTask.ACTIVITY_DOWNLOAD):
                     downloading += 1
                     total_speed += speed
+                elif (status == download.DownloadTask.DOWNLOADING and
+                        activity == download.DownloadTask.ACTIVITY_SYNCHRONIZE):
+                    synchronizing += 1
                 elif status == download.DownloadTask.FAILED:
                     failed += 1
                 elif status == download.DownloadTask.DONE:
@@ -1111,11 +1116,13 @@ class gPodder(BuilderWidget, dbus.service.Object):
             # Remember which tasks we have seen after this run
             self.download_tasks_seen = download_tasks_seen
 
-            text = [_('Downloads')]
-            if downloading + failed + queued > 0:
+            text = [_('Progress')]
+            if downloading + failed + queued + synchronizing > 0:
                 s = []
                 if downloading > 0:
                     s.append(N_('%(count)d active', '%(count)d active', downloading) % {'count':downloading})
+                if synchronizing > 0:
+                    s.append(N_('%(count)d active', '%(count)d active', synchronizing) % {'count':synchronizing})
                 if failed > 0:
                     s.append(N_('%(count)d failed', '%(count)d failed', failed) % {'count':failed})
                 if queued > 0:
@@ -1131,9 +1138,9 @@ class gPodder(BuilderWidget, dbus.service.Object):
                     self.download_tasks_seen if task.status_changed]
             episode_urls = [task.url for task in self.download_tasks_seen]
 
-            count = downloading + queued
-            if count > 0:
-                title.append(N_('downloading %(count)d file', 'downloading %(count)d files', count) % {'count':count})
+
+            if downloading > 0:
+                title.append(N_('downloading %(count)d file', 'downloading %(count)d files', downloading) % {'count':downloading})
 
                 if total_size > 0:
                     percentage = 100.0*done_size/total_size
@@ -1142,11 +1149,15 @@ class gPodder(BuilderWidget, dbus.service.Object):
                 self.set_download_progress(percentage/100.)
                 total_speed = util.format_filesize(total_speed)
                 title[1] += ' (%d%%, %s/s)' % (percentage, total_speed)
-            else:
+            if synchronizing > 0:
+                title.append(N_('synchronizing %(count)d file', 'synchronizing %(count)d files', synchronizing) % {'count':synchronizing})
+            if queued > 0:
+                title.append(N_('%(queued)d task queued', '%(queued)d tasks queued', queued) % {'queued':queued})
+            if (downloading + synchronizing + queued)==0:
                 self.set_download_progress(1.)
                 self.downloads_finished(self.download_tasks_seen)
                 gpodder.user_extensions.on_all_episodes_downloaded()
-                logger.info('All downloads have finished.')
+                logger.info('All tasks have finished.')
 
                 # Remove finished episodes
                 if self.config.auto_cleanup_downloads and can_call_cleanup:
@@ -1346,12 +1357,34 @@ class gPodder(BuilderWidget, dbus.service.Object):
         return selected_tasks, can_queue, can_cancel, can_pause, can_remove, can_force
 
     def downloads_finished(self, download_tasks_seen):
-        finished_downloads = [str(task) for task in download_tasks_seen if task.notify_as_finished()]
-        failed_downloads = [str(task)+' ('+task.error_message+')' for task in download_tasks_seen if task.notify_as_failed()]
+        # Separate tasks into downloads & syncs
+        # Since calling notify_as_finished or notify_as_failed clears the flag,
+        # need to iterate through downloads & syncs separately, else all sync
+        # tasks will have their flags cleared if we do downloads first
+
+        def filter_by_activity(activity, tasks):
+            return filter(lambda task: task.activity == activity, tasks)
+
+        download_tasks = filter_by_activity(download.DownloadTask.ACTIVITY_DOWNLOAD,
+                download_tasks_seen)
+
+        finished_downloads = [str(task)
+                for task in download_tasks if task.notify_as_finished()]
+        failed_downloads = ['%s (%s)' % (str(task), task.error_message)
+                for task in download_tasks if task.notify_as_failed()]
+
+        sync_tasks = filter_by_activity(download.DownloadTask.ACTIVITY_SYNCHRONIZE,
+                download_tasks_seen)
+
+        finished_syncs = [task for task in sync_tasks if task.notify_as_finished()]
+        failed_syncs = [task for task in sync_tasks if task.notify_as_failed()]
+
+        # Note that 'finished_ / failed_downloads' is a list of strings
+        # Whereas 'finished_ / failed_syncs' is a list of SyncTask objects
 
         if finished_downloads and failed_downloads:
             message = self.format_episode_list(finished_downloads, 5)
-            message += '\n\n<i>%s</i>\n' % _('These downloads failed:')
+            message += '\n\n<i>%s</i>\n' % _('Could not download some episodes:')
             message += self.format_episode_list(failed_downloads, 5)
             self.show_message(message, _('Downloads finished'), True, widget=self.labelDownloads)
         elif finished_downloads:
@@ -1360,6 +1393,33 @@ class gPodder(BuilderWidget, dbus.service.Object):
         elif failed_downloads:
             message = self.format_episode_list(failed_downloads)
             self.show_message(message, _('Downloads failed'), True, widget=self.labelDownloads)
+
+        if finished_syncs and failed_syncs:
+            message = self.format_episode_list(map((lambda task: str(task)),finished_syncs), 5)
+            message += '\n\n<i>%s</i>\n' % _('Could not sync some episodes:')
+            message += self.format_episode_list(map((lambda task: str(task)),failed_syncs), 5)
+            self.show_message(message, _('Device synchronization finished'), True, widget=self.labelDownloads)
+        elif finished_syncs:
+            message = self.format_episode_list(map((lambda task: str(task)),finished_syncs))
+            self.show_message(message, _('Device synchronization finished'), widget=self.labelDownloads)
+        elif failed_syncs:
+            message = self.format_episode_list(map((lambda task: str(task)),failed_syncs))
+            self.show_message(message, _('Device synchronization failed'), True, widget=self.labelDownloads)
+
+        # Do post-sync processing if required
+        for task in finished_syncs + failed_syncs:
+            if self.config.device_sync.after_sync.mark_episodes_played:
+                logger.info('Marking as played on transfer: %s', task.episode.url)
+                task.episode.mark(is_played=True)
+
+            if self.config.device_sync.after_sync.delete_episodes:
+                logger.info('Removing episode after transfer: %s', task.episode.url)
+                task.episode.delete_from_disk()
+
+            self.sync_ui.device.close()
+
+        # Update icon list to show changes, if any
+        self.update_episode_list_icons(all=True)
 
 
     def format_episode_list(self, episode_list, max_episodes=10):
@@ -1540,7 +1600,15 @@ class gPodder(BuilderWidget, dbus.service.Object):
             item.connect( 'activate', self.on_itemRemoveChannel_activate)
             menu.append( item)
 
-            menu.append( gtk.SeparatorMenuItem())
+            result = gpodder.user_extensions.on_channel_context_menu(self.active_channel)
+            if result:
+                menu.append(gtk.SeparatorMenuItem())
+                for label, callback in result:
+                    item = gtk.MenuItem(label)
+                    item.connect('activate', lambda item, callback: callback(self.active_channel), callback)
+                    menu.append(item)
+
+            menu.append(gtk.SeparatorMenuItem())
 
             item = gtk.ImageMenuItem(_('Podcast settings'))
             item.set_image(gtk.image_new_from_stock(gtk.STOCK_INFO, gtk.ICON_SIZE_MENU))
@@ -1606,7 +1674,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
                 util.delete_file(destfile)
 
-        threading.Thread(target=convert_and_send_thread, args=[episodes_to_copy]).start()
+        util.run_in_background(lambda: convert_and_send_thread(episodes_to_copy))
 
     def treeview_available_show_context_menu(self, treeview, event=None):
         model, paths = self.treeview_handle_context_menu_click(treeview, event)
@@ -2202,6 +2270,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
                         selected=[e.check_is_new() for e in episodes])
 
 
+        @util.run_in_background
         def thread_proc():
             # After the initial sorting and splitting, try all queued podcasts
             length = len(queued)
@@ -2250,7 +2319,6 @@ class gPodder(BuilderWidget, dbus.service.Object):
                 worked.append(channel.url)
 
             util.idle_add(on_after_update)
-        threading.Thread(target=thread_proc).start()
 
     def find_episode(self, podcast_url, episode_url):
         """Find an episode given its podcast and episode URL
@@ -2330,6 +2398,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
         self.pbFeedUpdate.set_text(text)
         self.pbFeedUpdate.set_fraction(0)
 
+        @util.run_in_background
         def update_feed_cache_proc():
             updated_channels = []
             for updated, channel in enumerate(channels):
@@ -2417,8 +2486,6 @@ class gPodder(BuilderWidget, dbus.service.Object):
                     self.show_update_feeds_buttons()
 
             util.idle_add(update_feed_cache_finish_callback)
-
-        threading.Thread(target=update_feed_cache_proc).start()
 
     def on_gPodder_delete_event(self, widget, *args):
         """Called when the GUI wants to close the window
@@ -2541,6 +2608,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
             self.update_podcast_list_model(channel_urls)
             self.play_or_download()
 
+        @util.run_in_background
         def thread_proc():
             episode_urls = set()
             channel_urls = set()
@@ -2566,8 +2634,6 @@ class gPodder(BuilderWidget, dbus.service.Object):
             self.mygpo_client.flush()
 
             util.idle_add(finish_deletion, episode_urls, channel_urls)
-
-        threading.Thread(target=thread_proc).start()
 
         return True
 
@@ -2947,6 +3013,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
             self.update_podcast_list_model(select_url=select_url)
             progress.on_finished()
 
+        @util.run_in_background
         def thread_proc():
             select_url = None
 
@@ -2987,8 +3054,6 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
             # The remaining stuff is to be done in the GTK main thread
             util.idle_add(finish_deletion, select_url)
-
-        threading.Thread(target=thread_proc).start()
 
     def on_itemRemoveChannel_activate(self, widget, *args):
         if self.active_channel is None:
@@ -3401,6 +3466,21 @@ class gPodder(BuilderWidget, dbus.service.Object):
     def extensions_episode_download_cb(self, episode):
         logger.debug('extension_episode_download_cb(%s)', episode)
         self.download_episode_list(episodes=[episode])
+
+    def on_sync_to_device_activate(self, widget, episodes=None, force_played=True):
+        self.sync_ui = gPodderSyncUI(self.config, self.notification,
+                self.main_window,
+                self.show_confirmation,
+                self.update_episode_list_icons,
+                self.update_podcast_list_model,
+                self.toolPreferences,
+                gPodderEpisodeSelector,
+                self.download_status_model,
+                self.download_queue_manager,
+                self.enable_download_list_update,
+                self.commit_changes_to_database)
+
+        self.sync_ui.on_synchronize_episodes(self.channels, episodes, force_played)
 
 def main(options=None):
     gobject.threads_init()
