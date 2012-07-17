@@ -83,6 +83,7 @@ from gpodder.gtkui.desktop.podcastdirectory import gPodderPodcastDirectory
 from gpodder.gtkui.interface.progress import ProgressIndicator
 
 from gpodder.gtkui.desktop.sync import gPodderSyncUI
+from gpodder.gtkui import flattr
 
 from gpodder.dbusproxy import DBusPodcastsProxy
 from gpodder import extensions
@@ -115,6 +116,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
         self.config = self.core.config
         self.db = self.core.db
         self.model = self.core.model
+        self.flattr = self.core.flattr
         BuilderWidget.__init__(self, None)
     
     def new(self):
@@ -508,16 +510,6 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
         util.idle_add(indicator.on_finished)
 
-    def on_podcast_selected(self, treeview, path, column):
-        # for Maemo 5's UI
-        model = treeview.get_model()
-        channel = model.get_value(model.get_iter(path), \
-                PodcastListModel.C_CHANNEL)
-        self.active_channel = channel
-        self.update_episode_list_model()
-        self.episodes_window.channel = self.active_channel
-        self.episodes_window.show()
-
     def on_button_subscribe_clicked(self, button):
         self.on_itemImportChannels_activate(button)
 
@@ -772,7 +764,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
     def init_episode_list_treeview(self):
         # For loading the list model
-        self.episode_list_model = EpisodeListModel(self.on_episode_list_filter_changed)
+        self.episode_list_model = EpisodeListModel(self.config, self.on_episode_list_filter_changed)
 
         if self.config.episode_list_view_mode == EpisodeListModel.VIEW_UNDELETED:
             self.item_view_episodes_undeleted.set_active(True)
@@ -907,8 +899,20 @@ class gPodder(BuilderWidget, dbus.service.Object):
 
         selection = self.treeAvailable.get_selection()
         selection.set_mode(gtk.SELECTION_MULTIPLE)
-        # Update the sensitivity of the toolbar buttons on the Desktop
-        selection.connect('changed', lambda s: self.play_or_download())
+        selection.connect('changed', self.on_episode_list_selection_changed)
+
+    def on_episode_list_selection_changed(self, selection):
+        # Update the toolbar buttons
+        self.play_or_download()
+
+        if (self.episode_shownotes_window is not None and
+                self.episode_shownotes_window.episode is not None):
+            rows = selection.count_selected_rows()
+            if rows != 1:
+                self.episode_shownotes_window.on_close_button_clicked()
+            else:
+                episode = self.get_selected_episodes()[0]
+                self.show_episode_shownotes(episode)
 
     def init_download_list_treeview(self):
         # enable multiple selection support
@@ -1902,6 +1906,11 @@ class gPodder(BuilderWidget, dbus.service.Object):
                     continue # This file was handled by the D-Bus call
                 except Exception, e:
                     logger.error('Calling Panucci using D-Bus', exc_info=True)
+
+            # flattr episode if auto-flattr is enabled
+            if self.config.flattr.token and self.config.flattr.flattr_on_play:
+                success, message = self.flattr.flattr_url(episode.payment_url)
+                self.show_message(message, title=_('Flattr status'), important=not success)
 
             groups[player].append(filename)
 
@@ -2914,6 +2923,7 @@ class gPodder(BuilderWidget, dbus.service.Object):
     def on_itemPreferences_activate(self, widget, *args):
         gPodderPreferences(self.main_window, \
                 _config=self.config, \
+                flattr=self.flattr, \
                 user_apps_reader=self.user_apps_reader, \
                 parent_window=self.main_window, \
                 mygpo_client=self.mygpo_client, \
@@ -2968,7 +2978,9 @@ class gPodder(BuilderWidget, dbus.service.Object):
                 update_podcast_list_model=self.update_podcast_list_model,
                 cover_downloader=self.cover_downloader,
                 sections=set(c.section for c in self.channels),
-                clear_cover_cache=self.podcast_list_model.clear_cover_cache)
+                clear_cover_cache=self.podcast_list_model.clear_cover_cache,
+                _config=self.config,
+                _flattr=self.flattr)
 
     def on_itemMassUnsubscribe_activate(self, item=None):
         columns = (
@@ -3302,7 +3314,8 @@ class gPodder(BuilderWidget, dbus.service.Object):
         episodes = self.get_selected_episodes()
         if episodes:
             episode = episodes.pop(0)
-            self.show_episode_shownotes(episode)
+            if episode is not None:
+                self.show_episode_shownotes(episode)
         else:
             self.show_message(_('Please select an episode from the episode list to display shownotes.'), _('No episode selected'), widget=self.treeAvailable)
 
@@ -3319,12 +3332,19 @@ class gPodder(BuilderWidget, dbus.service.Object):
     def show_episode_shownotes(self, episode):
         if self.episode_shownotes_window is None:
             self.episode_shownotes_window = gPodderShownotes(self.gPodder, _config=self.config, \
+                    _flattr=self.flattr, \
                     _download_episode_list=self.download_episode_list, \
                     _playback_episodes=self.playback_episodes, \
                     _delete_episode_list=self.delete_episode_list, \
                     _episode_list_status_changed=self.episode_list_status_changed, \
                     _cancel_task_list=self.cancel_task_list, \
                     _streaming_possible=self.streaming_possible())
+
+            if self.config.ui.gtk.episode_list.embed_shownotes:
+                self.episode_shownotes_window.main_window.vbox.reparent(self.vbox_episode_list)
+                self.episode_shownotes_window.main_window.vbox.set_border_width(0)
+                self.episode_shownotes_window.vbox1.set_border_width(0)
+
         self.episode_shownotes_window.show(episode)
         if episode.downloading:
             self.update_downloads_list()
