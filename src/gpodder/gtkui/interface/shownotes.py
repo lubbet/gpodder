@@ -19,9 +19,6 @@
 
 import gtk
 
-import logging
-logger = logging.getLogger(__name__)
-
 import gpodder
 
 _ = gpodder.gettext
@@ -108,6 +105,7 @@ class gPodderShownotesBase(BuilderWidget):
     def on_play_button_clicked(self, widget=None):
         if self.episode:
             self._playback_episodes([self.episode])
+            self.set_flattr_information()
 
     def on_download_button_clicked(self, widget=None):
         if self.episode:
