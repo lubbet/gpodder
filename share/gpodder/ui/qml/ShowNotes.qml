@@ -1,7 +1,7 @@
 
-import Qt 4.7
+import QtQuick 1.1
 
-import com.nokia.meego 1.0
+import org.gpodder.qmlui 1.0
 
 import 'config.js' as Config
 
@@ -32,11 +32,17 @@ Rectangle {
             anchors.right: parent.right
             wrapMode: Text.Wrap
             text: episode!=undefined?('<h3 color="#666">'+episode.qtitle+'</h3><small>'+formatSubtitle()+'</small><p>'+episode.qdescription+'</p>'):'No episode selected'
+            onLinkActivated: Qt.openUrlExternally(link)
 
             function formatSubtitle() {
                 var pubdate = episode.qpubdate;
                 var filesize = episode.qfilesize;
                 if (filesize !== '') {
+                    if (episode.qdownloaded) {
+                        var filename = episode.qsourceurl.split('/').pop();
+                        return pubdate + ' | ' + filesize + ' | ' + filename;
+                    }
+
                     return pubdate + ' | ' + filesize;
                 } else {
                     return pubdate;
@@ -45,8 +51,8 @@ Rectangle {
         }
     }
 
-    ScrollDecorator {
-        flickableItem: showNotesFlickable
+    ScrollScroll {
+        flickable: showNotesFlickable
     }
 }
 

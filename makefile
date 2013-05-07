@@ -1,6 +1,6 @@
 #
 # gPodder - A media aggregator and podcast client
-# Copyright (c) 2005-2012 Thomas Perl and the gPodder Team
+# Copyright (c) 2005-2013 Thomas Perl and the gPodder Team
 #
 # gPodder is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -36,7 +36,9 @@ MOFILES = $(patsubst po/%.po,$(LOCALEDIR)/%/LC_MESSAGES/gpodder.mo, $(POFILES))
 
 UIFILES=$(wildcard share/gpodder/ui/gtk/*.ui)
 UIFILES_H=$(subst .ui,.ui.h,$(UIFILES))
-QMLFILES=$(wildcard share/gpodder/ui/qml/*.qml)
+QMLFILES=$(wildcard share/gpodder/ui/qml/*.qml \
+                    share/gpodder/ui/qml/harmattan/org/gpodder/qmlui/*.qml \
+                    share/gpodder/ui/qml/sailfish/org/gpodder/qmlui/*.qml)
 GETTEXT_SOURCE=$(wildcard src/gpodder/*.py \
 		          src/gpodder/gtkui/*.py \
 		          src/gpodder/gtkui/interface/*.py \
@@ -84,7 +86,7 @@ $(GPODDER_DESKTOP_FILE_IN).h: $(GPODDER_DESKTOP_FILE_IN)
 	intltool-extract --quiet --type=gettext/ini $<
 
 install: messages $(GPODDER_SERVICE_FILE) $(GPODDER_DESKTOP_FILE)
-	$(PYTHON) setup.py install --root=$(DESTDIR) --prefix=$(PREFIX)
+	$(PYTHON) setup.py install --root=$(DESTDIR) --prefix=$(PREFIX) --optimize=1
 
 ##########################################################################
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # gPodder - A media aggregator and podcast client
-# Copyright (c) 2005-2012 Thomas Perl and the gPodder Team
+# Copyright (c) 2005-2013 Thomas Perl and the gPodder Team
 #
 # gPodder is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -69,7 +69,8 @@ def get_header_param(headers, param, header_name):
         msg = email.message_from_string('\n'.join(headers_string))
         if header_name in msg:
             raw_value = msg.get_param(param, header=header_name)
-            value = email.utils.collapse_rfc2231_value(raw_value)
+            if raw_value is not None:
+                value = email.utils.collapse_rfc2231_value(raw_value)
     except Exception, e:
         logger.error('Cannot get %s from %s', param, header_name, exc_info=True)
 
@@ -542,6 +543,8 @@ class DownloadTask(object):
     # Wheter this task represents a file download or a device sync operation
     ACTIVITY_DOWNLOAD, ACTIVITY_SYNCHRONIZE = range(2)
 
+    # Minimum time between progress updates (in seconds)
+    MIN_TIME_BETWEEN_UPDATES = 1.
 
     def __str__(self):
         return self.__episode.title
@@ -623,8 +626,9 @@ class DownloadTask(object):
         self.__limit_rate_value = self._config.limit_rate_value
         self.__limit_rate = self._config.limit_rate
 
-        # Callbacks
-        self._progress_updated = lambda x: None
+        # Progress update functions
+        self._progress_updated = None
+        self._last_progress_updated = 0.
 
         # If the tempname already exists, set progress accordingly
         if os.path.exists(self.tempname):
@@ -678,7 +682,11 @@ class DownloadTask(object):
 
         if self.total_size > 0:
             self.progress = max(0.0, min(1.0, float(count*blockSize)/self.total_size))
-            self._progress_updated(self.progress)
+            if self._progress_updated is not None:
+                diff = time.time() - self._last_progress_updated
+                if diff > self.MIN_TIME_BETWEEN_UPDATES or self.progress == 1.:
+                    self._progress_updated(self.progress)
+                    self._last_progress_updated = time.time()
 
         self.calculate_speed(count, blockSize)
 
@@ -753,8 +761,8 @@ class DownloadTask(object):
 
         try:
             # Resolve URL and start downloading the episode
-            url = youtube.get_real_download_url(self.__episode.url, \
-                    self._config.youtube_preferred_fmt_id)
+            fmt_ids = youtube.get_fmt_ids(self._config.youtube)
+            url = youtube.get_real_download_url(self.__episode.url, fmt_ids)
             url = vimeo.get_real_download_url(url)
 
             downloader = DownloadURLOpener(self.__episode.channel)
@@ -836,7 +844,7 @@ class DownloadTask(object):
                 if new_mimetype is not None:
                     logger.info('Using content-disposition mimetype: %s',
                             new_mimetype)
-                    self.__episode.set_mimetype(new_mimetype, commit=True)
+                    self.__episode.mime_type = new_mimetype
 
             # Re-evaluate filename and tempname to take care of podcast renames
             # while downloads are running (which will change both file names)
