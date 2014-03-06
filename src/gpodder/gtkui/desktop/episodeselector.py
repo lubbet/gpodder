@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # gPodder - A media aggregator and podcast client
-# Copyright (c) 2005-2013 Thomas Perl and the gPodder Team
+# Copyright (c) 2005-2014 Thomas Perl and the gPodder Team
 #
 # gPodder is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -260,6 +260,9 @@ class gPodderEpisodeSelector(BuilderWidget):
             self.last_tooltip_episode = index
 
             description = util.remove_html_tags(description)
+            # Bug 1825: make sure description is a unicode string,
+            # so it may be cut correctly on UTF-8 char boundaries
+            description = util.convert_bytes(description)
             if description is not None:
                 if len(description) > 400:
                     description = description[:398]+'[...]'

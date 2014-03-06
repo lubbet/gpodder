@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # gPodder - A media aggregator and podcast client
-# Copyright (c) 2005-2013 Thomas Perl and the gPodder Team
+# Copyright (c) 2005-2014 Thomas Perl and the gPodder Team
 #
 # gPodder is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -526,6 +526,13 @@ class Controller(QObject):
                         return episode
         return None
 
+    @Slot(QObject)
+    def updatePodcast(self, podcast):
+        if not self.request_connection():
+            return
+        if not podcast.pause_subscription:
+            podcast.qupdate(finished_callback=self.update_subset_stats)
+
     @Slot()
     def updateAllPodcasts(self):
         if not self.request_connection():
@@ -581,11 +588,8 @@ class Controller(QObject):
         assert index < len(self.context_menu_actions)
         action = self.context_menu_actions[index]
         if action.action == 'update':
-            if not self.request_connection():
-                return
             podcast = action.target
-            if not podcast.pause_subscription:
-                podcast.qupdate(finished_callback=self.update_subset_stats)
+            self.updatePodcast(podcast)
         elif action.action == 'force-update':
             action.target.qupdate(force=True, \
                     finished_callback=self.update_subset_stats)
