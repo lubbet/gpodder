@@ -92,7 +92,7 @@ if encoding is None:
         lang = os.environ['LANG']
         (language, encoding) = lang.rsplit('.', 1)
         logger.info('Detected encoding: %s', encoding)
-    elif gpodder.ui.harmattan or gpodder.ui.sailfish:
+    elif gpodder.ui.harmattan:
         encoding = 'utf-8'
     elif gpodder.ui.win32:
         # To quote http://docs.python.org/howto/unicode.html:
@@ -198,6 +198,12 @@ def normalize_feed_url(url):
 
     >>> normalize_feed_url('http://example.org/test?')
     'http://example.org/test'
+
+    Username and password in the URL must not be affected
+    by URL normalization (see gPodder bug 1942):
+
+    >>> normalize_feed_url('http://UserName:PassWord@Example.com/')
+    'http://UserName:PassWord@example.com/'
     """
     if not url or len(url) < 8:
         return None
@@ -225,8 +231,15 @@ def normalize_feed_url(url):
 
     scheme, netloc, path, query, fragment = urlparse.urlsplit(url)
 
+    # Domain name is case insensitive, but username/password is not (bug 1942)
+    if '@' in netloc:
+        authentication, netloc = netloc.rsplit('@', 1)
+        netloc = '@'.join((authentication, netloc.lower()))
+    else:
+        netloc = netloc.lower()
+
     # Schemes and domain names are case insensitive
-    scheme, netloc = scheme.lower(), netloc.lower()
+    scheme = scheme.lower()
 
     # Normalize empty paths to "/"
     if path == '':
@@ -1511,7 +1524,7 @@ def detect_device_type():
     Possible return values:
     desktop, laptop, mobile, server, other
     """
-    if gpodder.ui.harmattan or gpodder.ui.sailfish:
+    if gpodder.ui.harmattan:
         return 'mobile'
     elif glob.glob('/proc/acpi/battery/*'):
         # Linux: If we have a battery, assume Laptop
@@ -1757,4 +1770,11 @@ def website_reachable(url):
         pass
 
     return (False, None)
+
+def delete_empty_folders(top):
+    for root, dirs, files in os.walk(top, topdown=False):
+        for name in dirs:
+            dirname = os.path.join(root, name)
+            if not os.listdir(dirname):
+                os.rmdir(dirname)
 

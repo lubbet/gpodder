@@ -27,9 +27,12 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <shellapi.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <stdbool.h>
 
 #include "gpodder.h"
 #include "downloader.h"
@@ -41,13 +44,13 @@
 # define MAIN_MODULE "bin\\gpo"
 #endif
 
-#define PYTHON_INSTALLER_FILE "python-2.7.2.msi"
-#define PYTHON_INSTALLER_SIZE 15970304L
-#define PYGTK_INSTALLER_FILE "pygtk-all-in-one-2.24.0.win32-py2.7.msi"
-#define PYGTK_INSTALLER_SIZE 33583548L
+#define PYTHON_INSTALLER_FILE "python-2.7.8.msi"
+#define PYTHON_INSTALLER_SIZE 16703488L
+#define PYGTK_INSTALLER_FILE "pygtk-all-in-one-2.24.2.win32-py2.7.msi"
+#define PYGTK_INSTALLER_SIZE 33239562L
 
 #define PYTHON_INSTALLER_URL \
-    "http://python.org/ftp/python/2.7.2/" \
+    "http://python.org/ftp/python/2.7.8/" \
     PYTHON_INSTALLER_FILE
 
 #define PYGTK_INSTALLER_URL \
@@ -81,6 +84,45 @@ const char *FindPythonDLL(HKEY rootKey)
     return result;
 }
 
+bool contains_system_dll(const char *path, const char *filename)
+{
+    bool result = false;
+    struct stat st;
+
+    char *fn = malloc(strlen(path) + 1 + strlen(filename) + 1);
+    sprintf(fn, "%s\\%s", path, filename);
+    if (stat(fn, &st) == 0) {
+        result = true;
+    }
+    free(fn);
+
+    return result;
+}
+
+char *clean_path_variable(const char *path)
+{
+    char *old_path = strdup(path);
+    int length = strlen(path) + 1;
+    char *new_path = (char *)malloc(length);
+    memset(new_path, 0, length);
+
+    char *tok = strtok(old_path, ";");
+    while (tok != NULL) {
+        // Only add the path component if it doesn't contain msvcr90.dll
+        if (!contains_system_dll(tok, "msvcr90.dll")) {
+            if (strlen(new_path) > 0) {
+                strcat(new_path, ";");
+            }
+
+            strcat(new_path, tok);
+        }
+
+        tok = strtok(NULL, ";");
+    }
+
+    free(old_path);
+    return new_path;
+}
 
 int main(int argc, char** argv)
 {
@@ -140,6 +182,14 @@ int main(int argc, char** argv)
         }
     }
 
+    /**
+     * Workaround for error R6034 (need to do this before Python DLL
+     * is loaded, otherwise the runtime error will still show up)
+     **/
+    char *new_path = clean_path_variable(getenv("PATH"));
+    SetEnvironmentVariable("PATH", new_path);
+    free(new_path);
+
     /* Only load the Python DLL after we've set up the environment */
     python_dll = LoadLibrary("python27.dll");
 
@@ -162,6 +212,7 @@ int main(int argc, char** argv)
                 "Python 2.7 installation not found",
                 MB_YESNO | MB_ICONQUESTION) == IDYES) {
             strncpy(Temp_Download_Filename, gPodder_Home, MAX_PATH);
+            strncat(Temp_Download_Filename, "\\", MAX_PATH);
             strncat(Temp_Download_Filename, PYTHON_INSTALLER_FILE, MAX_PATH);
             if (DownloadFile(Temp_Download_Filename,
                         PYTHON_INSTALLER_URL,
@@ -200,6 +251,7 @@ int main(int argc, char** argv)
                 "PyGTK installation not found",
                 MB_YESNO | MB_ICONQUESTION) == IDYES) {
             strncpy(Temp_Download_Filename, gPodder_Home, MAX_PATH);
+            strncat(Temp_Download_Filename, "\\", MAX_PATH);
             strncat(Temp_Download_Filename, PYGTK_INSTALLER_FILE, MAX_PATH);
             if (DownloadFile(Temp_Download_Filename,
                         PYGTK_INSTALLER_URL,
